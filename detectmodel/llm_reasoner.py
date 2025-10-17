@@ -1,0 +1,200 @@
+import pandas as pd
+from datasets import Dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+import torch
+import os
+from tqdm import tqdm
+import fire
+
+
+# Set the visible CUDA device (keep consistent with training)
+# os.environ['CUDA_VISIBLE_DEVICES'] = '5'
+
+# local_model_path = "xxx/NLPLab/AgentsBD/LLM/Qwen/Qwen2.5-7B-Instruct"
+# lora_adapter_path = "./qwen_7b_400_de/final_lora_adapters" #  the adapters of qwen2.5-7b-instruct
+
+# local_model_path = "xxx/NLPLab/AgentsBD/LLM/LLM-Research/Meta-Llama-3-8B-Instruct"
+# lora_adapter_path = "./llama3_8b_400_de/final_lora_adapters" #  the adapters of llama3-8b-instruct
+
+#  #  Load the pre-trained model and tokenizer
+# print(f"Loading model from: {local_model_path}")
+# model = AutoModelForCausalLM.from_pretrained(
+#     local_model_path,
+#     torch_dtype=torch.bfloat16,
+#     device_map="auto"
+# )
+# print("Pre-trained model loaded.")
+
+
+# print(f"Loading tokenizer from: {lora_adapter_path}")
+# tokenizer = AutoTokenizer.from_pretrained(lora_adapter_path)
+# tokenizer.padding_side = "right"
+# if tokenizer.pad_token is None:
+#     print("Tokenizer does not have a pad token, setting it to eos_token.")
+#     tokenizer.pad_token = tokenizer.eos_token
+#     model.config.pad_token_id = tokenizer.eos_token_id
+# print("Tokenizer loaded and configured.")
+
+
+# # Load the LoRA adapter into the model
+# print(f"Loading LoRA adapter from: {lora_adapter_path}")
+# model = PeftModel.from_pretrained(model, lora_adapter_path)
+# model.eval() # Set to evaluation mode
+# print("LoRA adapter loaded.")
+
+def load_test_data(file_path):
+    """Loads the test data CSV file, assuming it contains a 'text' column."""
+    try:
+        df_test = pd.read_csv(file_path, header=0, names=['id', 'text', 'labels', 'target_labels','clean_text', 'poison_type'])
+        df_test['text'] = df_test['text'].astype(str)
+        df_test['attack_type'] = df_test['poison_type'].astype(str)
+        return df_test
+    except FileNotFoundError:
+        print(f"Error: File '{file_path}' not found.")
+        return pd.DataFrame({'text': []})
+    except Exception as e:
+        print(f"Error reading file '{file_path}': {e}")
+        return pd.DataFrame({'text': []})
+    
+# def predict(text):
+#     """Performs inference on the given text."""
+#     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
+#     with torch.no_grad():
+#         outputs = model.generate(**inputs, max_new_tokens=200, num_beams=5, early_stopping=True) # You can adjust generation parameters
+#     return tokenizer.decode(outputs[0], skip_special_tokens=True)    
+
+def main(test_data_path, output_csv_path, llm):
+    
+    # test_data_path = "xxx/NLPLab/AgentsBD/poison_data/sst-2/1/badnets/test-poison.csv"
+    # output_csv_path = "./bddata/badnets/test-poison.csv" # Define the output CSV file name
+
+    if llm == "qwen":
+        local_model_path = "xxx/NLPLab/AgentsBD/LLM/Qwen/Qwen2.5-7B-Instruct"
+    elif llm == "llama":
+        local_model_path = "xxx/NLPLab/AgentsBD/LLM/LLM-Research/Meta-Llama-3-8B-Instruct"
+    else:
+        print("Invalid LLM model.")
+        exit()
+
+    # Load the pre-trained model and tokenizer
+    print(f"Loading model from: {local_model_path}")
+    model = AutoModelForCausalLM.from_pretrained(
+        local_model_path,
+        torch_dtype=torch.bfloat16,
+        device_map="auto"
+    )
+    print("Pre-trained model loaded.")
+
+    print(f"Loading tokenizer from: {local_model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(local_model_path)
+    tokenizer.padding_side = "right"
+    if tokenizer.pad_token is None:
+        print("Tokenizer does not have a pad token, setting it to eos_token.")
+        tokenizer.pad_token = tokenizer.eos_token
+        model.config.pad_token_id = tokenizer.eos_token_id
+    print("Tokenizer loaded and configured.")
+
+    # Set model to evaluation mode
+    model.eval()
+    print("Model ready for inference.")
+
+    df_test = load_test_data(test_data_path)
+
+    if df_test.empty:
+        print("Exiting due to test data loading error.")
+        exit()
+
+    test_dataset = Dataset.from_pandas(df_test)
+    print("Test dataset loaded. First example:")
+    print(test_dataset[0])
+
+    # Perform inference on the test dataset and save results to a list
+    print("Starting inference on the test dataset...")
+    results = []
+    response_marker = "### Response: "
+    
+    for example in tqdm(test_dataset, desc="Inferencing texts"):
+        id = example['id']
+        text = example['text']
+        label = example['labels']
+        target_label = example['target_labels']
+        attack_type = example['attack_type']
+
+        prompt = f"""### Instruction: Analyze the following text to determine if it contains a backdoor attack. Please classify it into one of these categories:
+                    - badnets: Text with trigger patterns inserted
+                    - addsent: Text with additional sentences added
+                    - synbkd: Text with syntactic modifications
+                    - stylebkd: Text with style-based modifications
+                    - clean: Text with no backdoor
+
+                    Return only one word from the above options.
+
+                    ### Input: {text}
+
+                    ### Response:"""
+
+        """Performs inference on the given text."""
+        inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(model.device)
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs, 
+                max_new_tokens=10,  # Reduced since we only need one word
+                num_beams=1,  # Use greedy decoding for more consistent results
+                temperature=0.1,  # Lower temperature for more deterministic output
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id
+            )
+
+        prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract the text after "### Response: "
+        response_start_index = prediction.find(response_marker)
+
+        if response_start_index != -1:
+            # Extract the substring starting after the marker
+            extracted_text = prediction[response_start_index + len(response_marker):].strip()
+            # Get only the first word and convert to lowercase
+            extracted_text = extracted_text.split()[0].lower() if extracted_text.split() else ""
+            
+            # Validate the prediction and map to valid categories
+            valid_categories = ["badnets", "addsent", "synbkd", "stylebkd", "clean"]
+            if extracted_text not in valid_categories:
+                # Try to find the closest match or default to clean
+                for category in valid_categories:
+                    if category in extracted_text:
+                        extracted_text = category
+                        break
+                else:
+                    extracted_text = "clean"  # Default fallback
+            
+            print("raw_attack_type: ", attack_type)
+            print("predicted_category: ", extracted_text)
+        else:
+            # If the marker is not found (unexpected), default to clean
+            print(f"Warning: Response marker '{response_marker}' not found in prediction. Defaulting to 'clean'.")
+            extracted_text = "clean"
+
+        # Append the result with the extracted text
+        results.append({
+            '': id, 
+            '0': text, 
+            '1': label, 
+            '2': target_label, 
+            '3': attack_type, 
+            '4': extracted_text
+        })
+
+    # Convert the results list to a Pandas DataFrame and save to a CSV file
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(output_csv_path, index=False, encoding='utf-8')
+    print(f"Inference results saved to {output_csv_path}")
+
+    print("Inference finished.")
+
+
+
+if __name__ == "__main__":
+    fire.Fire(main)
+
+

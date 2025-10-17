@@ -1,0 +1,56 @@
+{
+    "target_dataset": {
+        "name": "hsol",
+        "dev_rate": 0.1,
+        "load": true,
+        "clean_data_basepath": "xxx/NLPLab/AgentsBD/datasets/hsol-clean"
+    },
+    "poison_dataset": {
+        "name": "hsol",
+        "dev_rate": 0.1,
+        "load": true,
+        "clean_data_basepath": "xxx/NLPLab/AgentsBD/datasets/hsol-clean"
+    },
+    "victim": {
+        "type": "causal",
+        "model": "phi-4-mini",
+        "path": "xxx/NLPLab/AgentsBD/LLM/LLM-Research/Phi-4-mini-instruct",
+        "lora_config": {
+            "r": 8,
+            "lora_alpha": 16,
+            "lora_dropout": 0.1,
+            "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        },
+        "template": "### Instruction: Identify the sentiment of the following text (Negative: 0, Positive: 1). {} ### Output:",
+        "num_classes": 2,
+        "device": "gpu",
+        "load_in_8bit": true,
+        "load_in_4bit": false
+    },
+    "attacker": {
+        "name": "base",
+        "metrics": ["accuracy"],
+        "train": {
+            "name": "sft",
+            "lr": 5e-4,
+            "epochs": 3,
+            "batch_size": 4,
+            "max_steps": 1000,
+            "ckpt": "best",
+            "save_path": "xxx/NLPLab/AgentsBD/victim_models/hsol/phi",
+            "debug": false
+        },
+        "poisoner":{
+            "name": "synbkd",
+            "poison_rate": 0.1,
+            "target_label": 1,
+            "label_consistency": false,
+            "label_dirty": false,
+            "load": true,
+            "clean_data_basepath": "xxx/NLPLab/AgentsBD/datasets/hsol-clean",
+            "template_id": -1,
+            "save": false
+        }
+    },
+    "clean-tune": false
+}
